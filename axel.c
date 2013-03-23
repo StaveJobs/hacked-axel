@@ -692,6 +692,29 @@ static int axel_segment_schedule(axel_t *axel, int ith) {
     int i;
     long long int size = axel->size;
     long long int d    = size / axel->seg_map.num_segments;
+
+    /**
+     *
+     * A trick
+     * Download the last segment first for the case 
+     * 'moov atom' of mp4 file in the end of file 
+     *
+     **/
+    i = axel->seg_map.num_segments - 1;
+    if (axel->seg_map.map[i] == 0) {
+        axel->conn[ith].currentbyte = i*d;
+        axel->conn[ith].lastbyte = (i + 1) * d - 1;
+        
+        
+        if (i == axel->seg_map.num_segments - 1)
+            axel->conn[ith].lastbyte = axel->size - 1;
+        
+        axel->conn[ith].segment = i;
+        axel->seg_map.map[i] = DOWNLOADING_PART;
+        
+        return 1;
+    }
+
     for (i = 0; i < axel->seg_map.num_segments; i++) 
         if (axel->seg_map.map[i] == 0) {
             axel->conn[ith].currentbyte = i*d;
