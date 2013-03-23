@@ -54,6 +54,7 @@ typedef struct
 
 	int state;
 	pthread_t setup_thread[1];
+    int segment;
 } conn_t;
 
 int conn_set( conn_t *conn, char *set_url );

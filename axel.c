@@ -31,6 +31,8 @@ static void *setup_thread( void * );
 static void axel_message( axel_t *axel, char *format, ... );
 static void axel_divide( axel_t *axel );
 
+static int axel_segment_schedule(axel_t *axel, int ith);
+
 static char *buffer = NULL;
 
 /* Create a new axel_t structure					*/
@@ -47,6 +49,12 @@ axel_t *axel_new( conf_t *conf, int count, void *url )
 	*axel->conf = *conf;
 	axel->conn = malloc( sizeof( conn_t ) * axel->conf->num_connections );
 	memset( axel->conn, 0, sizeof( conn_t ) * axel->conf->num_connections );
+    
+    /* clear our segment map */
+    axel->seg_map.map = malloc ( axel->conf->num_segments * sizeof ( int ) );
+    axel->seg_map.num_segments = axel->conf->num_segments;
+    memset( axel->seg_map.map, NULL_PART, axel->conf->num_segments * sizeof ( int )  );
+    
 	if( axel->conf->max_speed > 0 )
 	{
 		if( (float) axel->conf->max_speed / axel->conf->buffer_size < 0.5 )
@@ -167,7 +175,22 @@ int axel_open( axel_t *axel )
 		read( fd, &axel->bytes_done, sizeof( axel->bytes_done ) );
 		for( i = 0; i < axel->conf->num_connections; i ++ )
 			read( fd, &axel->conn[i].currentbyte, sizeof( axel->conn[i].currentbyte ) );
-
+        
+        /* read segment map */
+        read(fd, &axel->seg_map, sizeof(axel->seg_map) );
+        axel->seg_map.map = malloc( 1 + axel->seg_map.num_segments * sizeof ( int ) );
+        axel->conf->num_segments = axel->seg_map.num_segments;
+        
+        for(i = 0; i < axel->seg_map.num_segments; i++) {
+            read(fd, &axel->seg_map.map[i], sizeof (int) );
+            if (axel->seg_map.map[i] != DOWNLOADED_PART)
+                axel->seg_map.map[i] = NULL_PART;
+        }
+        
+        if (axel->conf->num_segments > 0)
+            for(i = 0;i < axel->conf->num_connections; i++)
+                axel_segment_schedule(axel, i);
+    
 		axel_message( axel, _("State file found: %lld bytes downloaded, %lld to go."),
 			axel->bytes_done, axel->size - axel->bytes_done );
 		
@@ -184,6 +207,10 @@ int axel_open( axel_t *axel )
 	if( axel->outfd == -1 )
 	{
 		axel_divide( axel );
+
+        if (axel->conf->num_segments > 0)
+            for(i = 0;i < axel->conf->num_connections; i++)
+                axel_segment_schedule(axel, i);
 		
 		if( ( axel->outfd = open( axel->filename, O_CREAT | O_WRONLY, 0666 ) ) == -1 )
 		{
@@ -332,7 +359,9 @@ void axel_do( axel_t *axel )
 				}
 				else
 				{
+                    if (axel->conf->num_segments == 0 )
 					axel_message( axel, _("Connection %i finished"), i );
+                    
 				}
 			}
 			if( !axel->conn[0].supported )
@@ -341,19 +370,43 @@ void axel_do( axel_t *axel )
 			}
 			axel->conn[i].enabled = 0;
 			conn_disconnect( &axel->conn[i] );
+            
+            /* hacked mode */
+            /* assign new segment to this conn */
+            if (axel->conf->num_segments > 0) {
+                axel->seg_map.map[axel->conn[i].segment] = DOWNLOADED_PART;
+                axel->seg_map.num_finish_segments ++;
+                if (axel_segment_schedule(axel, i) == 1) {
+                    axel->conn[i].state = 1;
+                    if( pthread_create( axel->conn[i].setup_thread, NULL, setup_thread, &axel->conn[i] ) != 0 )
+                    {
+                        axel_message( axel, _("pthread error!!!") );
+                        axel->ready = -1;
+                    }
+                    else
+                    {
+                        axel->conn[i].last_transfer = gettime();
+                    }
+                }
+            }
+            
 			continue;
 		}
 		/* remaining == Bytes to go					*/
 		remaining = axel->conn[i].lastbyte - axel->conn[i].currentbyte + 1;
+        int flag = 0;
 		if( remaining < size )
 		{
 			if( axel->conf->verbose )
 			{
+                if (axel->conf->num_segments == 0 )
 				axel_message( axel, _("Connection %i finished"), i );
+
 			}
 			axel->conn[i].enabled = 0;
 			conn_disconnect( &axel->conn[i] );
 			size = remaining;
+            flag = 1;
 			/* Don't terminate, still stuff to write!	*/
 		}
 		/* This should always succeed..				*/
@@ -367,6 +420,28 @@ void axel_do( axel_t *axel )
 		}
 		axel->conn[i].currentbyte += size;
 		axel->bytes_done += size;
+        
+        /* connection finished */
+        if (flag == 1) {
+            /* hacked mode */
+            if (axel->conf->num_segments > 0) {
+                axel->seg_map.map[axel->conn[i].segment] = DOWNLOADED_PART;
+                axel->seg_map.num_finish_segments ++;
+                
+                if (axel_segment_schedule(axel, i) == 1) {
+                    axel->conn[i].state = 1;
+                    if( pthread_create( axel->conn[i].setup_thread, NULL, setup_thread, &axel->conn[i] ) != 0 )
+                    {
+                        axel_message( axel, _("pthread error!!!") );
+                        axel->ready = -1;
+                    }
+                    else
+                    {
+                        axel->conn[i].last_transfer = gettime();
+                    }
+                }
+            }            
+        }
 	}
 	else
 	{
@@ -402,6 +477,7 @@ conn_check:
 				        	      i, axel->conn[i].host, axel->conn[i].port, axel->conn[i].local_if );
 				
 				axel->conn[i].state = 1;
+                
 				if( pthread_create( axel->conn[i].setup_thread, NULL, setup_thread, &axel->conn[i] ) == 0 )
 				{
 					axel->conn[i].last_transfer = gettime();
@@ -517,6 +593,12 @@ void save_state( axel_t *axel )
 	{
 		write( fd, &axel->conn[i].currentbyte, sizeof( axel->conn[i].currentbyte ) );
 	}
+    
+    /* write segment map into state file */
+    write(fd, &axel->seg_map, sizeof(axel->seg_map) );
+    for(i = 0; i < axel->seg_map.num_segments; i++)
+        write(fd, &axel->seg_map.map[i], sizeof(axel->seg_map.map[i] ));
+        
 	close( fd );
 }
 
@@ -573,9 +655,10 @@ static void axel_message( axel_t *axel, char *format, ... )
 /* Divide the file and set the locations for each connection		*/
 static void axel_divide( axel_t *axel )
 {
-	int i;
-	
+    int i;
+
 	axel->conn[0].currentbyte = 0;
+        
 	axel->conn[0].lastbyte = axel->size / axel->conf->num_connections - 1;
 	for( i = 1; i < axel->conf->num_connections; i ++ )
 	{
@@ -589,4 +672,26 @@ static void axel_divide( axel_t *axel )
 #ifdef DEBUG
 	printf( "Downloading %lld-%lld using conn. %i\n", axel->conn[i-1].currentbyte, axel->conn[i-1].lastbyte, i - 1 );
 #endif
+}
+
+static int axel_segment_schedule(axel_t *axel, int ith) {
+    int i;
+    long long int size = axel->size;
+    long long int d    = size / axel->seg_map.num_segments;
+    for (i = 0; i < axel->seg_map.num_segments; i++) 
+        if (axel->seg_map.map[i] == 0) {
+            axel->conn[ith].currentbyte = i*d;
+            axel->conn[ith].lastbyte = (i + 1) * d - 1;
+            
+            
+            if (i == axel->seg_map.num_segments - 1)
+                axel->conn[ith].lastbyte = axel->size - 1;
+            
+            axel->conn[ith].segment = i;
+            axel->seg_map.map[i] = DOWNLOADING_PART;
+            
+            return 1;
+        }
+    
+    return 0;
 }

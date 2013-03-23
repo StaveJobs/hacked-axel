@@ -30,6 +30,7 @@ static char *size_human( long long int value );
 static char *time_human( int value );
 static void print_commas( long long int bytes_done );
 static void print_alternate_output( axel_t *axel );
+static void print_stream_output( axel_t *axel );
 static void print_help();
 static void print_version();
 static void print_messages( axel_t *axel );
@@ -44,6 +45,7 @@ static struct option axel_options[] =
 	/* name			has_arg	flag	val */
 	{ "max-speed",		1,	NULL,	's' },
 	{ "num-connections",	1,	NULL,	'n' },
+	{ "num-segments",	1,	NULL,	'd' },
 	{ "output",		1,	NULL,	'o' },
 	{ "search",		2,	NULL,	'S' },
 	{ "no-proxy",		0,	NULL,	'N' },
@@ -90,7 +92,7 @@ int main( int argc, char *argv[] )
 	{
 		int option;
 		
-		option = getopt_long( argc, argv, "s:n:o:S::NqvhVaH:U:", axel_options, NULL );
+		option = getopt_long( argc, argv, "s:n:d:o:S::NqvhVaH:U:", axel_options, NULL );
 		if( option == -1 )
 			break;
 		
@@ -116,6 +118,13 @@ int main( int argc, char *argv[] )
 				return( 1 );
 			}
 			break;
+		case 'd':
+			if( !sscanf( optarg, "%i", &conf->num_segments ) )
+			{
+				print_help();
+				return( 1 );
+			}
+			break;                        
 		case 'o':
 			strncpy( fn, optarg, MAX_STRING );
 			break;
@@ -347,8 +356,13 @@ int main( int argc, char *argv[] )
 		
 		prev = axel->bytes_done;
 		axel_do( axel );
-		
-		if( conf->alternate_output )
+        
+        /* hacking output mode ;) */
+        if (conf->num_segments > 0) {
+			if( !axel->message && prev != axel->bytes_done )
+                print_stream_output( axel );
+        } 
+		else if( conf->alternate_output )
 		{			
 			if( !axel->message && prev != axel->bytes_done )
 				print_alternate_output( axel );
@@ -384,27 +398,32 @@ int main( int argc, char *argv[] )
 		
 		if( axel->message )
 		{
-			if(conf->alternate_output==1)
-			{
-				/* clreol-simulation */
-				putchar( '\r' );
-				for( i = 0; i < 79; i++ ) /* linewidth known? */
-					putchar( ' ' );
-				putchar( '\r' );
-			}
-			else
-			{
-				putchar( '\n' );
-			}
-			print_messages( axel );
-			if( !axel->ready )
-			{
+            if (axel->conf->num_segments == 0) {
+                if(conf->alternate_output==1)
+                {
+                    /* clreol-simulation */
+                    putchar( '\r' );
+                    for( i = 0; i < 79; i++ ) /* linewidth known? */
+                        putchar( ' ' );
+                    putchar( '\r' );
+                }
+                else
+                {
+                    putchar( '\n' );
+                }
+                print_messages( axel );
+                if( !axel->ready )
+                {
 				if(conf->alternate_output!=1)
 					print_commas( axel->bytes_done );
 				else
 					print_alternate_output(axel);
 			}
-		}
+            } else {
+                putchar( '\n' );
+                print_messages( axel );
+            }
+        }
 		else if( axel->ready )
 		{
 			putchar( '\n' );
@@ -480,8 +499,7 @@ void print_commas( long long int bytes_done )
 	fflush( stdout );
 }
 
-static void print_alternate_output(axel_t *axel) 
-{
+static void print_alternate_output(axel_t *axel) {
 	long long int done=axel->bytes_done;
 	long long int total=axel->size;
 	int i,j=0;
@@ -534,6 +552,55 @@ static void print_alternate_output(axel_t *axel)
 	fflush( stdout );
 }
 
+static void print_stream_output(axel_t *axel) 
+{
+	long long int done=axel->bytes_done;
+	long long int total=axel->size;
+	int i;
+	double now = gettime();
+	
+	printf("\r[%2d/%2d] [", axel->seg_map.num_finish_segments, axel->seg_map.num_segments);
+    
+	for(i=0;i< axel->seg_map.num_segments;i++)
+	{
+        switch (axel->seg_map.map[i]) {
+            case NULL_PART:
+                putchar('-');
+                break;
+            case DOWNLOADING_PART:
+                putchar('+');
+                break;
+            case DOWNLOADED_PART:
+                putchar('=');
+                break;
+        }
+	}
+	
+	if(axel->bytes_per_second > 1048576)
+		printf( "] [%6.1fMB/s]", (double) axel->bytes_per_second / (1024*1024) );
+	else if(axel->bytes_per_second > 1024)
+		printf( "] [%6.1fKB/s]", (double) axel->bytes_per_second / 1024 );
+	else
+		printf( "] [%6.1fB/s]", (double) axel->bytes_per_second );
+	
+	if(done<total)
+	{
+		int seconds,minutes,hours,days;
+		seconds=axel->finish_time - now;
+		minutes=seconds/60;seconds-=minutes*60;
+		hours=minutes/60;minutes-=hours*60;
+		days=hours/24;hours-=days*24;
+		if(days)
+			printf(" [%2dd%2d]",days,hours);
+		else if(hours)
+			printf(" [%2dh%02d]",hours,minutes);
+		else
+			printf(" [%02d:%02d]",minutes,seconds);
+	}
+	
+	fflush( stdout );
+}
+
 void print_help()
 {
 #ifdef NOGETOPTLONG
@@ -551,6 +618,7 @@ void print_help()
 		"-a\tAlternate progress indicator\n"
 		"-h\tThis information\n"
 		"-V\tVersion information\n"
+		"-d x\tSpecify number of segments (stream download mode)\n"
 		"\n"
 		"Visit http://axel.alioth.debian.org/ to report bugs\n") );
 #else
@@ -568,6 +636,7 @@ void print_help()
 		"--alternate\t\t-a\tAlternate progress indicator\n"
 		"--help\t\t\t-h\tThis information\n"
 		"--version\t\t-V\tVersion information\n"
+		"--num-segments=x\t\t-d x\tSpecify number of segments (stream download mode)\n"
 		"\n"
 		"Visit http://axel.alioth.debian.org/ to report bugs\n") );
 #endif

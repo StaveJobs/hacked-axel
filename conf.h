@@ -33,6 +33,7 @@ typedef struct
 	int connection_timeout;
 	int reconnect_delay;
 	int num_connections;
+    int num_segments;
 	int buffer_size;
 	int max_speed;
 	int verbose;
@@ -50,6 +51,12 @@ typedef struct
 	
 	char user_agent[MAX_STRING];
 } conf_t;
+
+typedef struct {
+    int num_segments;
+    int num_finish_segments;
+    int * map;
+} segment_map_t;
 
 int conf_loadfile( conf_t *conf, char *file );
 int conf_init( conf_t *conf );

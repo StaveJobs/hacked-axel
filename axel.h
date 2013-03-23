@@ -70,6 +70,10 @@
 #define AXEL_VERSION_STRING	"2.4"
 #define DEFAULT_USER_AGENT	"Axel " AXEL_VERSION_STRING " (" ARCH ")"
 
+#define NULL_PART           0
+#define DOWNLOADING_PART    1
+#define DOWNLOADED_PART     2
+
 typedef struct
 {
 	void *next;
@@ -92,6 +96,7 @@ typedef message_t if_t;
 typedef struct
 {
 	conn_t *conn;
+    segment_map_t seg_map;
 	conf_t conf[1];
 	char filename[MAX_STRING];
 	double start_time;
