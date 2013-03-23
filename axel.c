@@ -181,15 +181,20 @@ int axel_open( axel_t *axel )
         axel->seg_map.map = malloc( 1 + axel->seg_map.num_segments * sizeof ( int ) );
         axel->conf->num_segments = axel->seg_map.num_segments;
         
-        for(i = 0; i < axel->seg_map.num_segments; i++) {
+        for(i = 0; i < axel->seg_map.num_segments; i++) 
             read(fd, &axel->seg_map.map[i], sizeof (int) );
-            if (axel->seg_map.map[i] != DOWNLOADED_PART)
-                axel->seg_map.map[i] = NULL_PART;
-        }
         
+        long long int d    = axel->size / axel->seg_map.num_segments;
         if (axel->conf->num_segments > 0)
-            for(i = 0;i < axel->conf->num_connections; i++)
-                axel_segment_schedule(axel, i);
+            for(i = 0;i < axel->conf->num_connections; i++) 
+            {
+                axel->conn[i].lastbyte = (axel->conn[i].currentbyte / d + 1) * d - 1;
+                axel->conn[i].segment  = (axel->conn[i].currentbyte / d);
+                if (axel->conn[i].segment >= axel->seg_map.num_segments - 1) {
+                    axel->conn[i].segment = axel->seg_map.num_segments - 1;
+                    axel->conn[i].lastbyte = axel->size - 1;
+                }
+            }
     
 		axel_message( axel, _("State file found: %lld bytes downloaded, %lld to go."),
 			axel->bytes_done, axel->size - axel->bytes_done );
@@ -374,8 +379,17 @@ void axel_do( axel_t *axel )
             /* hacked mode */
             /* assign new segment to this conn */
             if (axel->conf->num_segments > 0) {
-                axel->seg_map.map[axel->conn[i].segment] = DOWNLOADED_PART;
-                axel->seg_map.num_finish_segments ++;
+                
+				if( axel->conn[i].currentbyte < axel->conn[i].lastbyte && axel->size != INT_MAX )
+                    /* unexpected closed connection */
+                    /* re-download the segment */
+                    axel->seg_map.map[axel->conn[i].segment] = NULL_PART;
+                else
+                {
+                    axel->seg_map.map[axel->conn[i].segment] = DOWNLOADED_PART;
+                    axel->seg_map.num_finish_segments ++;
+                }
+
                 if (axel_segment_schedule(axel, i) == 1) {
                     axel->conn[i].state = 1;
                     if( pthread_create( axel->conn[i].setup_thread, NULL, setup_thread, &axel->conn[i] ) != 0 )
