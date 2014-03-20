@@ -332,7 +332,6 @@ void axel_do( axel_t *axel )
 				}
 				else
 				{
-					axel_message( axel, _("Connection %i finished"), i );
 				}
 			}
 			if( !axel->conn[0].supported )
@@ -349,7 +348,6 @@ void axel_do( axel_t *axel )
 		{
 			if( axel->conf->verbose )
 			{
-				axel_message( axel, _("Connection %i finished"), i );
 			}
 			axel->conn[i].enabled = 0;
 			conn_disconnect( &axel->conn[i] );
@@ -386,10 +384,34 @@ conn_check:
 	/* Look for aborted connections and attempt to restart them.	*/
 	for( i = 0; i < axel->conf->num_connections; i ++ )
 	{
-		if( !axel->conn[i].enabled && axel->conn[i].currentbyte < axel->conn[i].lastbyte )
+		if( !axel->conn[i].enabled  )
 		{
 			if( axel->conn[i].state == 0 )
 			{	
+				if ( axel->conn[i].currentbyte >= axel->conn[i].lastbyte ) // we'll divide the largest segment into two pieces 
+				{
+					int k = 0;
+					int max_size = -1;		// size of the largest segment
+					int max_k = -1;				// save the index of the largest segment
+					for (k = 0; k < axel->conf->num_connections; k++ )
+						if ( k != i && axel->conn[k].enabled && axel->conn[k].lastbyte - axel->conn[k].currentbyte + 1 > max_size )
+						{
+							max_k = k;
+							max_size = axel->conn[k].lastbyte - axel->conn[k].currentbyte + 1;
+						}
+
+					/* recompute the location of ith segment and kth segment */
+					if (max_k != -1 && max_size > 512)
+					{
+						axel->conn[i].currentbyte = axel->conn[max_k].lastbyte - max_size/2;
+						axel->conn[i].lastbyte = axel->conn[max_k].lastbyte;
+						axel->conn[max_k].lastbyte = axel->conn[i].currentbyte - 1;
+					} else 
+					{
+						goto gt;
+					}
+				}
+
 				// Wait for termination of this thread
 				pthread_join(*(axel->conn[i].setup_thread), NULL);
 				
@@ -402,6 +424,7 @@ conn_check:
 				        	      i, axel->conn[i].host, axel->conn[i].port, axel->conn[i].local_if );
 				
 				axel->conn[i].state = 1;
+
 				if( pthread_create( axel->conn[i].setup_thread, NULL, setup_thread, &axel->conn[i] ) == 0 )
 				{
 					axel->conn[i].last_transfer = gettime();
@@ -414,7 +437,7 @@ conn_check:
 			}
 			else
 			{
-				if( gettime() > axel->conn[i].last_transfer + axel->conf->reconnect_delay )
+gt:			if( gettime() > axel->conn[i].last_transfer + axel->conf->reconnect_delay )
 				{
 					pthread_cancel( *axel->conn[i].setup_thread );
 					axel->conn[i].state = 0;
@@ -562,8 +585,7 @@ static void axel_message( axel_t *axel, char *format, ... )
 	{
 		axel->message = m;
 	}
-	else
-	{
+	else {
 		while( n->next != NULL )
 			n = n->next;
 		n->next = m;
